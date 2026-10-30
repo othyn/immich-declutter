@@ -7,9 +7,9 @@ import time
 
 # status:
 #   none      evaluated, not a candidate
-#   proposed  added to an album
-#   kept      was in the album but the user removed it -> never propose again
-#   deleted   was in the album and got deleted (or trashed)
+#   proposed  tagged
+#   kept      was tagged but the user removed the tag -> never propose again
+#   deleted   was tagged and got deleted (or trashed)
 #   retry     evaluation failed (e.g. no thumbnail yet); try again next run
 FINAL = ("none", "proposed", "kept", "deleted")
 
@@ -45,6 +45,10 @@ class State:
             "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+        self.db.commit()
+
+    def delete_meta(self, key: str) -> None:
+        self.db.execute("DELETE FROM meta WHERE key = ?", (key,))
         self.db.commit()
 
     def known(self, max_failures: int) -> set[str]:

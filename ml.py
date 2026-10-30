@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 
 import numpy as np
 import requests
+from PIL import Image
 
 from rules import PROMPT_GROUPS, SCORE_NAMES
 
@@ -57,3 +59,10 @@ class Clip:
                 out[score_name] = float(p[start : start + size].sum())
                 start += size
         return out
+
+
+def image_stats(data: bytes) -> dict[str, float]:
+    """Brightness (mean), contrast (std) and sharpness (Laplacian variance) of the greyscale thumbnail."""
+    g = np.asarray(Image.open(io.BytesIO(data)).convert("L"), dtype=np.float32)
+    lap = g[:-2, 1:-1] + g[2:, 1:-1] + g[1:-1, :-2] + g[1:-1, 2:] - 4 * g[1:-1, 1:-1]
+    return {"brightness": float(g.mean()), "contrast": float(g.std()), "sharpness": float(lap.var())}

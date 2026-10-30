@@ -22,12 +22,11 @@ def client(permissions):
 
 
 def test_check_access_reports_missing_permission():
-    im = client(["asset.read", "asset.view", "album.read", "album.create"])
-    with pytest.raises(PermissionError, match="albumAsset.create"):
+    im = client(["asset.read", "asset.view", "tag.create"])
+    with pytest.raises(PermissionError, match="tag.asset"):
         im.check_access()
 
 
-@pytest.mark.parametrize("perms", [["all"], ["asset.read", "asset.view", "album.read", "album.create",
-                                             "albumAsset.create"]])
+@pytest.mark.parametrize("perms", [["all"], ["asset.read", "asset.view", "tag.create", "tag.asset"]])
 def test_check_access_ok(perms):
     client(perms).check_access()

@@ -1,5 +1,6 @@
-"""immich-declutter: periodically collects deletion candidates (memes, TikToks, screenshots,
-receipts) into one Immich album per category. It never deletes anything itself.
+"""immich-declutter: periodically tags clutter candidates (memes, TikToks, screenshots, receipts,
+YouTube grabs, photos of screens, documents, blurry and low-quality shots, messaging-app media)
+with one Immich tag per category under a parent such as "Utilities". It never deletes anything.
 
 Usage:
   python declutter.py                    # scheduler (daily at RUN_AT)
@@ -24,23 +25,26 @@ import requests
 
 import rules
 from immich import Immich, NotFound
-from ml import Clip
+from ml import Clip, image_stats
 from state import State
 
 LOG = logging.getLogger("immich-declutter")
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 VISIBLE = ("timeline", "archive")
 
-DEFAULT_ALBUMS = {
-    rules.MEMES: "🧹 Memes & web images",
-    rules.TIKTOK: "🧹 TikTok & Reels",
-    rules.SCREENSHOTS: "🧹 Screenshots",
-    rules.RECEIPTS: "🧾 Receipts & barcodes",
+# Tags keep albums for curation. Removing a tag from an asset marks it kept: it is never proposed again.
+DEFAULT_TAGS = {
+    rules.MEMES: "Memes & Web Images",
+    rules.TIKTOK: "TikTok & Reels",
+    rules.SCREENSHOTS: "Screenshots",
+    rules.RECEIPTS: "Receipts & Barcodes",
+    rules.YOUTUBE: "YouTube",
+    rules.SCREENS: "Photos of Screens",
+    rules.DOCUMENTS: "Documents",
+    rules.BLURRY: "Blurry",
+    rules.LOWQUALITY: "Low Quality",
+    rules.MESSAGING: "Messaging",
 }
-ALBUM_DESCRIPTION = (
-    "Filled automatically by immich-declutter: candidates for deletion. "
-    "Delete what can go; remove from this album what you want to keep (it will never be proposed again)."
-)
 
 
 def env_required(name: str) -> str:
@@ -85,7 +89,7 @@ class Config:
     threads: int
     max_failures: int
     categories: set[str]
-    albums: dict[str, str]
+    tags: dict[str, str]
     thresholds: rules.Thresholds
     public_url: str
     uptime_kuma_push_url: str
@@ -123,7 +127,10 @@ class Config:
             threads=env_int("THREADS", 4, minimum=1),
             max_failures=env_int("MAX_FAILURES", 5, minimum=1),
             categories=cats,
-            albums={c: os.getenv(f"ALBUM_{c.upper()}", DEFAULT_ALBUMS[c]).strip() for c in rules.CATEGORIES},
+            tags={
+                c: f"{os.getenv('TAG_PARENT', 'Utilities').strip()}/{os.getenv(f'TAG_{c.upper()}', DEFAULT_TAGS[c]).strip()}"
+                for c in rules.CATEGORIES
+            },
             thresholds=thresholds,
             public_url=os.getenv("IMMICH_PUBLIC_URL", "").strip().rstrip("/"),
             uptime_kuma_push_url=os.getenv("UPTIME_KUMA_PUSH_URL", "").strip(),
@@ -141,7 +148,7 @@ class Notifier:
             return
         data = {"token": self.cfg.pushover_token, "user": self.cfg.pushover_user, "title": title, "message": message}
         if url:
-            data |= {"url": url, "url_title": "Open Immich albums"}
+            data |= {"url": url, "url_title": "Open Immich tags"}
         try:
             requests.post(PUSHOVER_URL, data=data, timeout=15).raise_for_status()
         except requests.RequestException as exc:
@@ -165,8 +172,8 @@ class RunResult:
     deleted: int = 0
     failed: int = 0
 
-    def summary(self, albums: dict[str, str]) -> str:
-        parts = [f"{albums[c]}: {n}" for c, n in self.new.items() if n]
+    def summary(self, tags: dict[str, str]) -> str:
+        parts = [f"{tags[c]}: {n}" for c, n in self.new.items() if n]
         return (
             f"{self.scanned} evaluated, {sum(self.new.values())} new candidates"
             + (f" ({'; '.join(parts)})" if parts else "")
@@ -185,35 +192,33 @@ class Declutter:
         self.clip = clip
         self.state = state
 
-    # --- albums ---
+    # --- tags ---
 
-    def ensure_albums(self) -> dict[str, str]:
-        existing = {a["id"]: a["albumName"] for a in self.immich.albums()}
-        by_name = {name: aid for aid, name in existing.items()}
-        ids = {}
-        for cat in sorted(self.cfg.categories):
-            name = self.cfg.albums[cat]
-            stored = self.state.get_meta(f"album:{cat}")
-            if stored in existing:
-                ids[cat] = stored
-            elif name in by_name:
-                ids[cat] = by_name[name]
-            elif self.cfg.dry_run:
-                LOG.info("DRY_RUN: would create album '%s'", name)
+    def ensure_tags(self) -> dict[str, str]:
+        if self.cfg.dry_run:
+            for cat in sorted(self.cfg.categories):
+                LOG.info("DRY_RUN: would ensure tag '%s'", self.cfg.tags[cat])
+            return {}
+        return {cat: self.immich.upsert_tag(self.cfg.tags[cat]) for cat in sorted(self.cfg.categories)}
+
+    def migrate_albums(self, tag_ids: dict[str, str]) -> None:
+        """One-off: tag what upstream put in its review albums, so reconcile() keeps treating
+        removals as 'kept'. The emptied albums are left for the user to delete."""
+        for cat, tag_id in tag_ids.items():
+            album_id = self.state.get_meta(f"album:{cat}")
+            if not album_id:
                 continue
-            else:
-                ids[cat] = self.immich.create_album(name, ALBUM_DESCRIPTION)
-                LOG.info("Created album: %s", name)
-            if not self.cfg.dry_run:
-                self.state.set_meta(f"album:{cat}", ids[cat])
-        return ids
+            ids = sorted(self.immich.album_asset_ids(album_id))
+            self.immich.tag_assets(tag_id, ids)
+            self.state.delete_meta(f"album:{cat}")
+            LOG.info("Migrated %d assets from album %s to tag '%s'", len(ids), album_id, self.cfg.tags[cat])
 
-    def reconcile(self, album_ids: dict[str, str], result: RunResult) -> None:
-        """What the user removed from an album since the last run: kept or deleted."""
+    def reconcile(self, tag_ids: dict[str, str], result: RunResult) -> None:
+        """What the user untagged since the last run: kept or deleted."""
         proposed = self.state.proposed()
-        if not proposed:
+        if not proposed or not tag_ids:
             return
-        members = {cat: self.immich.album_asset_ids(aid) for cat, aid in album_ids.items()}
+        members = {cat: self.immich.tag_asset_ids(tid) for cat, tid in tag_ids.items()}
         for asset_id, cat in proposed.items():
             if cat not in members or asset_id in members[cat]:
                 continue
@@ -225,8 +230,7 @@ class Declutter:
                 result.deleted += 1
             else:
                 result.kept += 1
-            if not self.cfg.dry_run:
-                self.state.set(asset_id, "deleted" if gone else "kept")
+            self.state.set(asset_id, "deleted" if gone else "kept")
         self.state.commit()
 
     # --- candidates ---
@@ -258,6 +262,7 @@ class Declutter:
             if a["id"] not in known
             and a.get("visibility", "timeline") in VISIBLE
             and not a.get("isTrashed")
+            and not a.get("isFavorite")
             and rules.needs_analysis(a, self.cfg.categories)
         ]
         if self.cfg.max_assets:
@@ -267,6 +272,8 @@ class Declutter:
     def analyse(self, asset: dict) -> tuple[str | None, str]:
         data, mime = self.immich.thumbnail(asset["id"])
         scores = self.clip.scores(self.clip.image(data, mime))
+        if rules.has_camera(asset) and asset.get("type") == "IMAGE":
+            scores |= image_stats(data)
         need_ocr = rules.needs_ocr(asset, scores, self.cfg.thresholds)
         boxes = rules.boxes_from_api(self.immich.ocr(asset["id"])) if need_ocr else []
         return rules.classify(asset, scores, boxes, self.cfg.categories, self.cfg.thresholds)
@@ -277,7 +284,7 @@ class Declutter:
         try:
             return self._run()
         except BaseException:
-            # Drop uncommitted rows: 'proposed' assets whose album flush failed would
+            # Drop uncommitted rows: 'proposed' assets whose tag flush failed would
             # otherwise be committed by the next run and mistaken for 'kept'.
             self.state.rollback()
             raise
@@ -286,8 +293,9 @@ class Declutter:
         result = RunResult(new={c: 0 for c in sorted(self.cfg.categories)})
         self.immich.ping()
         self.immich.check_access()
-        album_ids = self.ensure_albums()
-        self.reconcile(album_ids, result)
+        tag_ids = self.ensure_tags()
+        self.migrate_albums(tag_ids)
+        self.reconcile(tag_ids, result)
 
         until = datetime.now(timezone.utc) - timedelta(hours=self.cfg.min_age_hours)
         assets = self.candidates(until)
@@ -298,11 +306,11 @@ class Declutter:
         to_add: dict[str, list[str]] = {c: [] for c in self.cfg.categories}
 
         def flush() -> None:
-            # Albums first, then state: a crash in between must never leave 'proposed'
-            # assets outside their album (the next run would mistake them for 'kept').
+            # Tags first, then state: a crash in between must never leave 'proposed'
+            # assets untagged (the next run would mistake them for 'kept').
             for cat, ids in to_add.items():
                 if ids and not self.cfg.dry_run:
-                    self.immich.add_to_album(album_ids[cat], ids)
+                    self.immich.tag_assets(tag_ids[cat], ids)
                 ids.clear()
             self.state.commit()
 
@@ -406,16 +414,16 @@ def main() -> None:
                 notifier.pushover("immich-declutter: error", str(exc)[:500])
             failing = True
         else:
-            summary = result.summary(cfg.albums)
+            summary = result.summary(cfg.tags)
             LOG.info("Done in %.0fs: %s", time.monotonic() - start, summary)
             notifier.heartbeat(True, summary)
             total = sum(result.new.values())
             if total and not cfg.dry_run:
-                lines = [f"{cfg.albums[c]}: {n}" for c, n in result.new.items() if n]
+                lines = [f"{cfg.tags[c]}: {n}" for c, n in result.new.items() if n]
                 notifier.pushover(
                     f"immich-declutter: {total} new candidates",
                     "\n".join(lines),
-                    f"{cfg.public_url}/albums" if cfg.public_url else "",
+                    f"{cfg.public_url}/tags" if cfg.public_url else "",
                 )
             elif failing:
                 notifier.pushover("immich-declutter: recovered", summary)

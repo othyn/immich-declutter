@@ -1,7 +1,7 @@
 FROM python:3.13-slim
 
-LABEL org.opencontainers.image.source="https://github.com/rvanderend/immich-declutter" \
-      org.opencontainers.image.description="Collects deletion candidates (memes, TikToks, screenshots, receipts) into Immich albums" \
+LABEL org.opencontainers.image.source="https://github.com/othyn/immich-declutter" \
+      org.opencontainers.image.description="Tags clutter candidates (memes, screenshots, receipts, blurry and low-quality shots, ...) in Immich" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

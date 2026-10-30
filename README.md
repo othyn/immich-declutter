@@ -1,18 +1,30 @@
 # immich-declutter
 
-A headless companion container for [Immich](https://immich.app). Every night it looks at the photos and videos that were added to your library and collects likely clutter into one album per category:
+> Fork of [rvanderend/immich-declutter](https://github.com/rvanderend/immich-declutter). This fork writes Immich **tags** instead of albums, so albums stay for curated collections, and adds six categories. Favourites are never proposed. The new thresholds are first guesses on SigLIP2: dry-run each category before trusting it.
 
-| Album | What ends up there |
+A headless companion container for [Immich](https://immich.app). Every night it looks at the photos and videos that were added to your library and tags likely clutter, one tag per category under a parent tag (`Utilities` by default), like the Utilities and Media Types lists in Apple Photos:
+
+| Tag | What ends up there |
 |---|---|
-| 🧹 Memes & web images | memes, cartoons, quote images, pictures saved from the web (including stills with a TikTok watermark) |
-| 🧹 TikTok & Reels | videos only, with a TikTok/Reels/CapCut watermark |
-| 🧹 Screenshots | screenshots of apps, chats, maps and websites |
-| 🧾 Receipts & barcodes | till receipts, invoices, barcodes, QR codes, shipping labels, tickets |
+| Utilities/Memes & Web Images | memes, cartoons, quote images, pictures saved from the web (including stills with a TikTok watermark) |
+| Utilities/TikTok & Reels | videos only, with a TikTok/Reels/CapCut watermark |
+| Utilities/Screenshots | screenshots of apps, chats, maps and websites; native PNG screenshots by size |
+| Utilities/Receipts & Barcodes | till receipts, invoices, barcodes, QR codes, shipping labels, tickets |
+| Utilities/YouTube | screenshots of YouTube and other video players |
+| Utilities/Photos of Screens | camera photos of monitors, laptops, TVs and phones |
+| Utilities/Documents | camera photos of letters, forms, pages and whiteboards |
+| Utilities/Blurry | camera photos CLIP calls blurry *and* with low Laplacian variance on the thumbnail |
+| Utilities/Low Quality | dark or flat (pocket) shots, and accidental photos of floors, ceilings and walls |
+| Utilities/Messaging | media saved from WhatsApp, Telegram or Signal (by filename), when nothing else matched |
 
-**immich-declutter never deletes anything.** You review the albums in Immich:
+Each asset gets at most one tag. Archived assets are included; Immich's tag view shows them too.
+
+**immich-declutter never deletes anything.** You review the tags in Immich:
 
 - **Delete** what can go, with Immich's normal delete and trash.
-- **Keep** a photo by removing it from the album. immich-declutter remembers that and never proposes it again, not even during a full scan.
+- **Keep** a photo by removing its tag. immich-declutter remembers that and never proposes it again, not even during a full scan.
+
+Upgrading from upstream: on the first run, everything still in the upstream review albums is tagged, so earlier keep decisions survive. Delete the emptied albums yourself afterwards. The migration needs the old `album.read` permission once.
 
 ## How it decides
 
@@ -37,7 +49,7 @@ Your library will differ, so the thresholds can be tuned with `THRESHOLD_*` (see
 
 - Immich with **Smart Search (CLIP)** and **OCR** enabled. Tested with Immich 3.2.
 - Network access to the Immich server **and** to the `immich-machine-learning` container (port 3003). Immich's default compose file doesn't publish that port, so the easiest way is to join Immich's Docker network (see `compose.yaml`).
-- An Immich API key with these permissions: `asset.read`, `asset.view`, `album.read`, `album.create`, `albumAsset.create`. The container checks them at the start of every run.
+- An Immich API key with these permissions: `asset.read`, `asset.view`, `tag.create`, `tag.asset` (plus `album.read` once, when migrating from upstream albums). The container checks them at the start of every run.
 
 ## Setup
 
@@ -88,12 +100,13 @@ All settings are environment variables; see [`.env.example`](.env.example).
 | `TZ` | `UTC` | timezone for `RUN_AT` |
 | `RUN_AT` | `03:30` | daily run time (HH:MM) |
 | `RUN_ON_START` | `false` | also run immediately when the container starts |
-| `CATEGORIES` | all | comma-separated: `memes,tiktok,screenshots,receipts` |
+| `CATEGORIES` | all | comma-separated: `memes,tiktok,screenshots,receipts,youtube,screens,documents,blurry,lowquality,messaging` |
 | `FULL_SCAN` | `false` | evaluate the whole library instead of only new assets |
 | `MIN_AGE_HOURS` | `3` | only evaluate assets at least this old |
-| `ALBUM_MEMES`, `ALBUM_TIKTOK`, `ALBUM_SCREENSHOTS`, `ALBUM_RECEIPTS` | see table above | album names (albums are tracked by id afterwards, so renaming them in Immich is fine) |
-| `THRESHOLD_MEME`, `THRESHOLD_MEME_VIDEO`, `THRESHOLD_CAPTION`, `THRESHOLD_SCREEN`, `THRESHOLD_RECEIPT_WITH_OCR`, `THRESHOLD_RECEIPT`, `THRESHOLD_BARCODE` | see `rules.py` | CLIP score thresholds (0–1) |
-| `DRY_RUN` | `false` | write nothing (no albums, no state), only log |
+| `TAG_PARENT` | `Utilities` | parent tag; each category is a child tag under it |
+| `TAG_MEMES`, `TAG_TIKTOK`, `TAG_SCREENSHOTS`, `TAG_RECEIPTS`, `TAG_YOUTUBE`, `TAG_SCREENS`, `TAG_DOCUMENTS`, `TAG_BLURRY`, `TAG_LOWQUALITY`, `TAG_MESSAGING` | see table above | child tag names (no `/`). Renaming a tag in Immich makes the next run create a new one |
+| `THRESHOLD_<NAME>` for every field of `Thresholds` in `rules.py` | see `rules.py` | CLIP score thresholds (0–1); `THRESHOLD_SHARPNESS`, `THRESHOLD_DARK` and `THRESHOLD_FLAT` are pixel statistics on the 0–255 greyscale thumbnail |
+| `DRY_RUN` | `false` | write nothing (no tags, no state), only log |
 | `THREADS` | `4` | parallel thumbnail/ML requests |
 | `MAX_ASSETS` | `0` | limit per run (0 = unlimited), useful for testing |
 | `IMMICH_PUBLIC_URL` | – | used for the link in notifications |

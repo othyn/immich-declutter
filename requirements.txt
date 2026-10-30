@@ -1,3 +1,4 @@
 requests>=2.31,<3
 numpy>=2,<3
 tzdata>=2024.1
+pillow>=10,<12

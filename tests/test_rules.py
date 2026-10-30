@@ -52,7 +52,7 @@ def test_camera_photo_only_receipts():
     assert classify(cam, {"receipt": 0.4}, bon, ALL)[0] == rules.RECEIPTS
     assert classify(cam, {"receipt": 0.4}, [Box(0.5, 0.52, "TOTAAL 12,95")], ALL)[0] is None
     assert classify(cam, {"receipt": 0.4}, [Box(0.5, 0.52, "hello")], ALL)[0] is None
-    assert not rules.needs_analysis(cam, ALL - {rules.RECEIPTS})
+    assert not rules.needs_analysis(cam, ALL - rules.CAMERA_CATEGORIES)
 
 
 def test_short_ocr_words_exact():
@@ -106,3 +106,48 @@ def test_needs_ocr():
 def test_generic_words_dropped():
     # 'cash'/'change' matched a toy cash register and a petrol pump
     assert rules.has_word([Box(0, 0.1, "CASH REGISTER change")], rules.RECEIPT_WORDS) is None
+
+
+def named(name, w=1170, h=2532, make=None, type_="IMAGE"):
+    return img(w, h, make, type_) | {"originalFileName": name}
+
+
+def test_native_screenshots():
+    assert classify(named("IMG_3553.PNG"), {}, [], ALL) == (rules.SCREENSHOTS, "native-png")
+    assert classify(named("Screenshot.png", 2880, 1800), {}, [], ALL) == (rules.SCREENSHOTS, "native-png")
+    # a PNG in a photo aspect ratio, or a camera PNG, is not a screenshot by itself
+    assert classify(named("export.png", 1600, 1200), {}, [], ALL)[0] is None
+    assert classify(named("IMG_1.PNG", make="Apple"), {}, [], ALL)[0] is None
+
+
+def test_youtube_needs_clip_or_clip_plus_ocr():
+    assert classify(img(), {"youtube": 0.7}, [], ALL)[0] == rules.YOUTUBE
+    subscribe = [Box(0.8, 0.85, "Subscribe")]
+    assert classify(img(), {"youtube": 0.35}, subscribe, ALL) == (rules.YOUTUBE, "youtube=0.35+ocr:subscribe")
+    assert classify(img(), {"youtube": 0.1}, subscribe, ALL)[0] is None
+
+
+def test_camera_categories():
+    cam = img(make="Apple")
+    assert classify(cam, {"brightness": 5.0}, [], ALL) == (rules.LOWQUALITY, "dark=5")
+    assert classify(cam, {"junk": 0.7}, [], ALL)[0] == rules.LOWQUALITY
+    assert classify(cam, {"blurry": 0.6, "sharpness": 20.0}, [], ALL)[0] == rules.BLURRY
+    # CLIP thinks blurry but the thumbnail is sharp (e.g. a plain sky): not proposed
+    assert classify(cam, {"blurry": 0.6, "sharpness": 400.0}, [], ALL)[0] is None
+    assert classify(cam, {"screen_photo": 0.7}, [], ALL)[0] == rules.SCREENS
+    page = [Box(0.1, 0.12, " ".join(["word"] * 30))]
+    assert classify(cam, {"document": 0.5}, page, ALL) == (rules.DOCUMENTS, "document=0.50+ocr")
+    assert classify(cam, {"document": 0.5}, [], ALL)[0] is None
+    assert classify(cam, {}, [], ALL)[0] is None
+
+
+def test_messaging_is_a_fallback():
+    assert classify(named("IMG-20240101-WA0003.jpg", 1600, 1200), {}, [], ALL) == (rules.MESSAGING, "filename:whatsapp")
+    assert classify(named("VID-20240101-WA0001.mp4", 1280, 720, type_="VIDEO"), {}, [], ALL)[0] == rules.MESSAGING
+    # a forwarded meme stays a meme
+    assert classify(named("IMG-20240101-WA0004.jpg", 1600, 1200), {"meme": 0.9}, [], ALL)[0] == rules.MEMES
+
+
+def test_only_enabled_camera_categories_trigger_analysis():
+    assert not rules.needs_analysis(img(make="Apple"), {rules.MEMES})
+    assert rules.needs_analysis(img(make="Apple"), {rules.BLURRY})

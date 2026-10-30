@@ -1,5 +1,6 @@
 import numpy as np
 
+import declutter
 import rules
 from declutter import Config, Declutter
 from immich import NotFound
@@ -9,6 +10,7 @@ from state import State
 class FakeImmich:
     def __init__(self, assets):
         self.assets = {a["id"]: a for a in assets}
+        self.tag_members: dict[str, set[str]] = {}
         self.album_members: dict[str, set[str]] = {}
 
     def ping(self):
@@ -17,18 +19,18 @@ class FakeImmich:
     def check_access(self):
         pass
 
-    def albums(self):
-        return [{"id": aid, "albumName": aid} for aid in self.album_members]
+    def upsert_tag(self, value):
+        self.tag_members.setdefault(value, set())
+        return value
 
-    def create_album(self, name, description):
-        self.album_members[name] = set()
-        return name
+    def tag_asset_ids(self, tag_id):
+        return set(self.tag_members[tag_id])
+
+    def tag_assets(self, tag_id, ids):
+        self.tag_members[tag_id] |= set(ids)
 
     def album_asset_ids(self, album_id):
         return set(self.album_members[album_id])
-
-    def add_to_album(self, album_id, ids):
-        self.album_members[album_id] |= set(ids)
 
     def search(self, **filters):
         return list(self.assets.values())
@@ -67,6 +69,7 @@ def make(tmp_path, monkeypatch, assets):
     for k, v in {"IMMICH_URL": "http://i", "IMMICH_API_KEY": "k", "ML_URL": "http://m",
                  "FULL_SCAN": "true", "MIN_AGE_HOURS": "0", "THREADS": "1"}.items():
         monkeypatch.setenv(k, v)
+    monkeypatch.setattr(declutter, "image_stats", lambda data: {})  # fake thumbnails are not images
     cfg = Config.from_env()
     immich = FakeImmich(assets)
     return Declutter(cfg, immich, FakeClip(), State(str(tmp_path / "s.db"))), immich, cfg
@@ -76,37 +79,55 @@ def test_full_cycle(tmp_path, monkeypatch):
     d, immich, cfg = make(tmp_path, monkeypatch, [asset("meme1"), asset("meme2"), asset("photo"),
                                                   asset("meme3", make="Apple")])
     r = d.run()
-    album = cfg.albums[rules.MEMES]
-    assert r.new[rules.MEMES] == 2 and immich.album_members[album] == {"meme1", "meme2"}
+    tag = cfg.tags[rules.MEMES]
+    assert tag == "Utilities/Memes & Web Images"
+    assert r.new[rules.MEMES] == 2 and immich.tag_members[tag] == {"meme1", "meme2"}
 
-    # user keeps meme1 (removes it from the album) and deletes meme2
-    immich.album_members[album] = set()
+    # user keeps meme1 (removes the tag) and deletes meme2
+    immich.tag_members[tag] = set()
     del immich.assets["meme2"]
     r = d.run()
     assert (r.kept, r.deleted, r.new[rules.MEMES]) == (1, 1, 0)
-    assert immich.album_members[album] == set()  # meme1 is never proposed again
+    assert immich.tag_members[tag] == set()  # meme1 is never proposed again
 
 
-def test_albums_filled_before_state_commit(tmp_path, monkeypatch):
-    """A crash after the album flush must not turn proposals into 'kept' on the next run."""
+def test_favourites_are_never_proposed(tmp_path, monkeypatch):
+    d, immich, cfg = make(tmp_path, monkeypatch, [asset("meme1") | {"isFavorite": True}])
+    assert d.run().new[rules.MEMES] == 0
+
+
+def test_migrates_upstream_albums_to_tags(tmp_path, monkeypatch):
+    """Assets still in an upstream review album get tagged; ones the user removed count as kept."""
+    d, immich, cfg = make(tmp_path, monkeypatch, [asset("meme1"), asset("meme2")])
+    d.state.set("meme1", "proposed", rules.MEMES)
+    d.state.set("meme2", "proposed", rules.MEMES)
+    d.state.set_meta(f"album:{rules.MEMES}", "old-album")
+    immich.album_members["old-album"] = {"meme1"}
+    r = d.run()
+    assert immich.tag_members[cfg.tags[rules.MEMES]] == {"meme1"}
+    assert r.kept == 1 and d.state.get_meta(f"album:{rules.MEMES}") is None
+
+
+def test_tags_written_before_state_commit(tmp_path, monkeypatch):
+    """A crash after the tag flush must not turn proposals into 'kept' on the next run."""
     many = [asset(f"meme{i}") for i in range(600)]
     d, immich, cfg = make(tmp_path, monkeypatch, many)
     calls = []
-    orig = immich.add_to_album
-    immich.add_to_album = lambda aid, ids: (calls.append(len(ids)), orig(aid, ids))
+    orig = immich.tag_assets
+    immich.tag_assets = lambda tid, ids: (calls.append(len(ids)), orig(tid, ids))
     d.run()
     assert calls == [500, 100]
 
 
-def test_failed_album_flush_rolls_back_state(tmp_path, monkeypatch):
-    """A failing album add must not leave 'proposed' rows behind for the next run to commit."""
+def test_failed_tag_flush_rolls_back_state(tmp_path, monkeypatch):
+    """A failing tag write must not leave 'proposed' rows behind for the next run to commit."""
     d, immich, cfg = make(tmp_path, monkeypatch, [asset("meme1"), asset("photo")])
-    real_add = immich.add_to_album
+    real_add = immich.tag_assets
 
-    def forbidden(aid, ids):
+    def forbidden(tid, ids):
         raise RuntimeError("403 Forbidden")
 
-    immich.add_to_album = forbidden
+    immich.tag_assets = forbidden
     try:
         d.run()
     except RuntimeError:
@@ -114,7 +135,7 @@ def test_failed_album_flush_rolls_back_state(tmp_path, monkeypatch):
     else:
         raise AssertionError("run should fail")
 
-    immich.add_to_album = real_add
+    immich.tag_assets = real_add
     r = d.run()
     assert (r.kept, r.new[rules.MEMES]) == (0, 1)
-    assert immich.album_members[cfg.albums[rules.MEMES]] == {"meme1"}
+    assert immich.tag_members[cfg.tags[rules.MEMES]] == {"meme1"}

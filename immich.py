@@ -12,7 +12,7 @@ class NotFound(Exception):
 
 
 # What a restricted API key needs; "all" covers everything.
-REQUIRED_PERMISSIONS = ("asset.read", "asset.view", "album.read", "album.create", "albumAsset.create")
+REQUIRED_PERMISSIONS = ("asset.read", "asset.view", "tag.create", "tag.asset")
 
 
 class Immich:
@@ -75,16 +75,19 @@ class Immich:
         data = self._req("GET", f"/assets/{asset_id}/ocr").json()
         return data if isinstance(data, list) else []
 
-    def albums(self) -> list[dict]:
-        return self._req("GET", "/albums").json()
+    def upsert_tag(self, value: str) -> str:
+        """Create the tag (and its parents, from a "Parent/Child" path) if missing; returns the leaf id."""
+        tags = self._req("PUT", "/tags", json={"tags": [value]}).json()
+        return next(t["id"] for t in tags if t["value"] == value)
 
-    def create_album(self, name: str, description: str) -> str:
-        return self._req("POST", "/albums", json={"albumName": name, "description": description}).json()["id"]
+    def tag_asset_ids(self, tag_id: str) -> set[str]:
+        # Search without a visibility filter covers timeline and archive (everything but hidden).
+        return {a["id"] for a in self.search(tagIds=[tag_id], withExif=False)}
+
+    def tag_assets(self, tag_id: str, asset_ids: list[str]) -> None:
+        for i in range(0, len(asset_ids), 500):
+            self._req("PUT", f"/tags/{tag_id}/assets", json={"ids": asset_ids[i : i + 500]})
 
     def album_asset_ids(self, album_id: str) -> set[str]:
-        # GET /albums/{id} no longer returns assets in 3.x; the search API does.
+        """Only used to migrate the upstream review albums to tags (needs album.read)."""
         return {a["id"] for a in self.search(albumIds=[album_id], withExif=False)}
-
-    def add_to_album(self, album_id: str, asset_ids: list[str]) -> None:
-        for i in range(0, len(asset_ids), 500):
-            self._req("PUT", f"/albums/{album_id}/assets", json={"ids": asset_ids[i : i + 500]})
