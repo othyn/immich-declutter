@@ -139,3 +139,12 @@ def test_failed_tag_flush_rolls_back_state(tmp_path, monkeypatch):
     r = d.run()
     assert (r.kept, r.new[rules.MEMES]) == (0, 1)
     assert immich.tag_members[cfg.tags[rules.MEMES]] == {"meme1"}
+
+
+def test_new_categories_re_evaluate_none_assets(tmp_path, monkeypatch):
+    """An upstream db marked 'photo' as 'none'; enabling new categories must look at it again, once."""
+    d, immich, cfg = make(tmp_path, monkeypatch, [asset("photo")])
+    d.state.set("photo", "none")
+    d.state.commit()
+    assert d.run().scanned == 1
+    assert d.run().scanned == 0

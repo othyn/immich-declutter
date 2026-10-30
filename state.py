@@ -51,13 +51,15 @@ class State:
         self.db.execute("DELETE FROM meta WHERE key = ?", (key,))
         self.db.commit()
 
-    def known(self, max_failures: int) -> set[str]:
-        """Assets that need no (re-)evaluation: final status, or failed too often."""
+    def known(self, max_failures: int, include_none: bool = True) -> set[str]:
+        """Assets that need no (re-)evaluation: final status, or failed too often.
+        include_none=False re-evaluates 'none' assets, e.g. after new categories were enabled."""
+        final = FINAL if include_none else tuple(s for s in FINAL if s != "none")
         q = (
-            f"SELECT asset_id FROM assets WHERE status IN ({','.join('?' * len(FINAL))}) "
+            f"SELECT asset_id FROM assets WHERE status IN ({','.join('?' * len(final))}) "
             "OR (status = 'retry' AND failures >= ?)"
         )
-        return {r[0] for r in self.db.execute(q, (*FINAL, max_failures))}
+        return {r[0] for r in self.db.execute(q, (*final, max_failures))}
 
     def retry_ids(self, max_failures: int) -> list[str]:
         q = "SELECT asset_id FROM assets WHERE status = 'retry' AND failures < ?"

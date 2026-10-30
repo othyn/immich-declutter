@@ -256,7 +256,15 @@ class Declutter:
             except NotFound:
                 self.state.set(asset_id, "deleted")
 
-        known = self.state.known(self.cfg.max_failures)
+        # Assets judged 'none' before a category existed may match it: re-evaluate them once.
+        # A state db without the key comes from upstream, which knew the first four categories.
+        stored = self.state.get_meta("categories")
+        self.seen_categories = set(stored.split(",")) if stored else set(rules.CATEGORIES[:4])
+        recheck = bool(self.cfg.categories - self.seen_categories)
+        if recheck:
+            LOG.info("New categories %s: re-evaluating assets judged 'none' before",
+                     ", ".join(sorted(self.cfg.categories - self.seen_categories)))
+        known = self.state.known(self.cfg.max_failures, include_none=not recheck)
         out = [
             a for a in assets
             if a["id"] not in known
@@ -347,6 +355,7 @@ class Declutter:
 
         flush()
         if not self.cfg.dry_run:
+            self.state.set_meta("categories", ",".join(sorted(self.cfg.categories | self.seen_categories)))
             self.state.set_meta("cutoff", iso(until))
             self.state.set_meta("last_run", iso(datetime.now(timezone.utc)))
         self.state.commit()
