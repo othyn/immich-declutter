@@ -131,6 +131,9 @@ CAMERA_NEG = [
     "a photo of a city street", "a photo of a building", "a photo of food", "a photo of a pet", "a photo of flowers",
     "a photo of a garden", "a photo of a room interior", "a photo of a car", "a photo of a concert",
     "a holiday photo", "a photo of a party", "a photo of a sports event", "a photo of a forest",
+    # Skies are soft and low-detail by nature; without these, clouds land in "blurry".
+    "a photo of clouds in the sky", "a photo of a blue sky", "a photo of a cloudy sky", "a photo of fog",
+    "a photo of mist over a landscape", "a photo of the sea", "a photo of snow",
 ]
 
 # name -> (positive groups, negatives). Every positive group yields its own score.
