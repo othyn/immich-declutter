@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -40,7 +41,9 @@ class Immich:
         missing = [p for p in REQUIRED_PERMISSIONS if p not in granted]
         if "all" not in granted and missing:
             raise PermissionError(f"API key lacks permission {', '.join(missing)}")
-        body = {"size": 1, "page": 1, "type": "IMAGE"}
+        # A day old, so its thumbnail exists: a fresh upload 404s on /thumbnail and reads as no access.
+        day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        body = {"size": 1, "page": 1, "type": "IMAGE", "createdBefore": day_ago}
         items = self._req("POST", "/search/metadata", json=body).json()["assets"]["items"]
         if not items:
             return
