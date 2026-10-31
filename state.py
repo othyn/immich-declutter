@@ -32,6 +32,11 @@ class State:
                 updated_at REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS assets_status ON assets(status);
+            CREATE TABLE IF NOT EXISTS media (
+                asset_id TEXT PRIMARY KEY,
+                types TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
             """
         )
         self.db.commit()
@@ -83,6 +88,21 @@ class State:
             "ON CONFLICT(asset_id) DO UPDATE SET status = 'retry', reason = excluded.reason, "
             "failures = assets.failures + 1, updated_at = excluded.updated_at",
             (asset_id, error[:200], time.time()),
+        )
+
+    def media_known(self) -> set[str]:
+        return {r[0] for r in self.db.execute("SELECT asset_id FROM media WHERE types != '?'")}
+
+    def media_retry_ids(self) -> list[str]:
+        """Originals exiftool could not read last time ('?'), e.g. a file still being moved."""
+        return [r[0] for r in self.db.execute("SELECT asset_id FROM media WHERE types = '?'")]
+
+    def set_media(self, asset_id: str, types: set[str] | None) -> None:
+        """Media tags are facts about the file: read once, never reconciled."""
+        self.db.execute(
+            "INSERT INTO media (asset_id, types, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(asset_id) DO UPDATE SET types = excluded.types, updated_at = excluded.updated_at",
+            (asset_id, "?" if types is None else ",".join(sorted(types)), time.time()),
         )
 
     def commit(self) -> None:

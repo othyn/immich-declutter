@@ -1,6 +1,8 @@
-"""immich-declutter: periodically tags clutter candidates (memes, TikToks, screenshots, receipts,
-YouTube grabs, photos of screens, documents, blurry and low-quality shots, messaging-app media)
-with one Immich tag per category under a parent such as "Utilities". It never deletes anything.
+"""immich-declutter: periodically tags clutter candidates (memes, social media grabs, screenshots,
+receipts, photos of screens, documents, blurry and low-quality shots, messaging-app media) with one
+Immich tag per category under a parent such as "Utilities". It also tags iOS capture formats
+(portrait, spatial, cinematic, slo-mo, bursts, RAW) under "Media", read from the original files.
+It never deletes anything.
 
 Usage:
   python declutter.py                    # scheduler (daily at RUN_AT)
@@ -23,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import media
 import rules
 from immich import Immich, NotFound
 from ml import Clip, image_stats
@@ -35,10 +38,10 @@ VISIBLE = ("timeline", "archive")
 # Tags keep albums for curation. Removing a tag from an asset marks it kept: it is never proposed again.
 DEFAULT_TAGS = {
     rules.MEMES: "Memes & Web Images",
-    rules.TIKTOK: "TikTok & Reels",
+    rules.TIKTOK: "Social Media",
     rules.SCREENSHOTS: "Screenshots",
     rules.RECEIPTS: "Receipts & Barcodes",
-    rules.YOUTUBE: "YouTube",
+    rules.YOUTUBE: "Social Media",
     rules.SCREENS: "Photos of Screens",
     rules.DOCUMENTS: "Documents",
     rules.BLURRY: "Blurry",
@@ -91,6 +94,9 @@ class Config:
     categories: set[str]
     tags: dict[str, str]
     thresholds: rules.Thresholds
+    media_types: set[str]
+    media_tags: dict[str, str]
+    media_threads: int
     public_url: str
     uptime_kuma_push_url: str
     pushover_token: str
@@ -107,6 +113,10 @@ class Config:
             datetime.strptime(run_at, "%H:%M")
         except ValueError:
             sys.exit("RUN_AT must be HH:MM")
+        media_types = {t.strip().lower() for t in os.getenv("MEDIA", ",".join(media.TYPES)).split(",") if t.strip()}
+        media_types.discard("none")
+        if media_types - set(media.TYPES):
+            sys.exit(f"Unknown MEDIA: {', '.join(sorted(media_types - set(media.TYPES)))} (choose from {', '.join(media.TYPES)}, or none)")
         defaults = rules.Thresholds()
         thresholds = rules.Thresholds(
             **{f.name: env_float(f"THRESHOLD_{f.name.upper()}", getattr(defaults, f.name)) for f in fields(defaults)}
@@ -132,6 +142,12 @@ class Config:
                 for c in rules.CATEGORIES
             },
             thresholds=thresholds,
+            media_types=media_types,
+            media_tags={
+                t: f"{os.getenv('MEDIA_TAG_PARENT', 'Media').strip()}/{os.getenv(f'MEDIA_TAG_{t.upper()}', media.DEFAULT_TAGS[t]).strip()}"
+                for t in media.TYPES
+            },
+            media_threads=env_int("MEDIA_THREADS", 4, minimum=1),
             public_url=os.getenv("IMMICH_PUBLIC_URL", "").strip().rstrip("/"),
             uptime_kuma_push_url=os.getenv("UPTIME_KUMA_PUSH_URL", "").strip(),
             pushover_token=os.getenv("PUSHOVER_TOKEN", "").strip(),
@@ -171,6 +187,7 @@ class RunResult:
     kept: int = 0
     deleted: int = 0
     failed: int = 0
+    media: dict[str, int] = field(default_factory=dict)
 
     def summary(self, tags: dict[str, str]) -> str:
         parts = [f"{tags[c]}: {n}" for c, n in self.new.items() if n]
@@ -178,6 +195,7 @@ class RunResult:
             f"{self.scanned} evaluated, {sum(self.new.values())} new candidates"
             + (f" ({'; '.join(parts)})" if parts else "")
             + f", {self.kept} kept, {self.deleted} deleted since last run, {self.failed} failed"
+            + (f", media {', '.join(f'{t} {n}' for t, n in self.media.items() if n)}" if any(self.media.values()) else "")
         )
 
 
@@ -286,6 +304,64 @@ class Declutter:
         boxes = rules.boxes_from_api(self.immich.ocr(asset["id"])) if need_ocr else []
         return rules.classify(asset, scores, boxes, self.cfg.categories, self.cfg.thresholds)
 
+    # --- media ---
+
+    def tag_media(self, until: datetime, result: RunResult) -> None:
+        """Tag iOS capture formats once per asset. The first run reads the whole library."""
+        if not self.cfg.media_types:
+            return
+        cutoff = self.state.get_meta("media_cutoff")
+        filters = {"createdBefore": iso(until)} | ({"createdAfter": cutoff} if cutoff else {})
+        LOG.info("Media: %s", f"assets added since {cutoff}" if cutoff else "whole library (first run)")
+        known = self.state.media_known()
+        assets = [a for a in self.immich.search(**filters) if a["id"] not in known]
+        listed = {a["id"] for a in assets}
+        # ponytail: unreadable originals are retried every run with no cap, add a failure count if any stay unreadable
+        for asset_id in self.state.media_retry_ids():
+            if asset_id in listed:
+                continue
+            try:
+                assets.append(self.immich.asset(asset_id))
+            except NotFound:
+                self.state.set_media(asset_id, set())
+        LOG.info("Media: %d assets to read", len(assets))
+        tag_ids = {} if self.cfg.dry_run else {
+            t: self.immich.upsert_tag(self.cfg.media_tags[t]) for t in sorted(self.cfg.media_types)
+        }
+        result.media = {t: 0 for t in sorted(self.cfg.media_types)}
+
+        def work(batch: list[dict]) -> list[tuple[dict, set[str] | None]]:
+            metas = media.read([a["originalPath"] for a in batch if media.needs_exiftool(a)])
+            out = []
+            for a in batch:
+                if media.needs_exiftool(a) and a["originalPath"] not in metas:
+                    out.append((a, None))  # unreadable now: try again next run
+                else:
+                    found = media.from_name(a) | media.detect(metas.get(a["originalPath"], {}))
+                    out.append((a, found & self.cfg.media_types))
+            return out
+
+        batches = [assets[i : i + 100] for i in range(0, len(assets), 100)]
+        done = 0
+        with ThreadPoolExecutor(self.cfg.media_threads) as pool:
+            for rows in pool.map(work, batches):
+                to_add: dict[str, list[str]] = {}
+                for asset, found in rows:
+                    for t in found or ():
+                        to_add.setdefault(t, []).append(asset["id"])
+                        result.media[t] += 1
+                    if not self.cfg.dry_run:
+                        self.state.set_media(asset["id"], found)
+                if not self.cfg.dry_run:
+                    for t, ids in to_add.items():
+                        self.immich.tag_assets(tag_ids[t], ids)
+                self.state.commit()
+                done += len(rows)
+                if done % 5000 < 100:
+                    LOG.info("... media %d/%d read", done, len(assets))
+        if not self.cfg.dry_run:
+            self.state.set_meta("media_cutoff", iso(until))
+
     # --- run ---
 
     def run(self) -> RunResult:
@@ -354,6 +430,7 @@ class Declutter:
                     LOG.info("... %d/%d evaluated", n, len(assets))
 
         flush()
+        self.tag_media(until, result)
         if not self.cfg.dry_run:
             self.state.set_meta("categories", ",".join(sorted(self.cfg.categories | self.seen_categories)))
             self.state.set_meta("cutoff", iso(until))
@@ -399,8 +476,8 @@ def main() -> None:
     notifier = Notifier(cfg)
     tz = ZoneInfo(cfg.timezone)
     LOG.info(
-        "immich-declutter started: categories %s, daily at %s %s%s%s",
-        ", ".join(sorted(cfg.categories)), cfg.run_at, cfg.timezone,
+        "immich-declutter started: categories %s, media %s, daily at %s %s%s%s",
+        ", ".join(sorted(cfg.categories)), ", ".join(sorted(cfg.media_types)) or "off", cfg.run_at, cfg.timezone,
         ", FULL_SCAN" if cfg.full_scan else "", ", DRY_RUN" if cfg.dry_run else "",
     )
 

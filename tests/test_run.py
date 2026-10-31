@@ -70,6 +70,7 @@ def make(tmp_path, monkeypatch, assets):
                  "FULL_SCAN": "true", "MIN_AGE_HOURS": "0", "THREADS": "1"}.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(declutter, "image_stats", lambda data: {})  # fake thumbnails are not images
+    monkeypatch.setattr(declutter.media, "read", lambda paths: {p: {} for p in paths})
     cfg = Config.from_env()
     immich = FakeImmich(assets)
     return Declutter(cfg, immich, FakeClip(), State(str(tmp_path / "s.db"))), immich, cfg
@@ -148,3 +149,31 @@ def test_new_categories_re_evaluate_none_assets(tmp_path, monkeypatch):
     d.state.commit()
     assert d.run().scanned == 1
     assert d.run().scanned == 0
+
+
+def test_media_tags_read_once(tmp_path, monkeypatch):
+    d, immich, cfg = make(tmp_path, monkeypatch, [asset("pic", make="Apple"), asset("cam") | {"originalFileName": "D.RAF"},
+                                                  asset("gone", make="Apple")])
+    reads = []
+
+    def fake_read(paths):
+        reads.extend(paths)
+        return {p: {":BurstUUID": "x"} for p in paths if "gone" not in p}
+
+    monkeypatch.setattr(declutter.media, "read", fake_read)
+    r = d.run()
+    assert immich.tag_members["Media/Bursts"] == {"pic"} and immich.tag_members["Media/RAW"] == {"cam"}
+    assert r.media["bursts"] == 1 and "/x/cam.jpg" not in reads  # RAW from the name, no exiftool
+    reads.clear()
+    d.run()
+    assert reads == ["/x/gone.jpg"]  # unreadable last time, retried; the rest is not read again
+
+
+def test_media_retry_survives_cutoff(tmp_path, monkeypatch):
+    d, immich, cfg = make(tmp_path, monkeypatch, [asset("late", make="Apple")])
+    monkeypatch.setattr(declutter.media, "read", lambda paths: {})
+    d.run()
+    immich.search = lambda **f: []  # with a cutoff, the old asset is no longer listed
+    monkeypatch.setattr(declutter.media, "read", lambda paths: {p: {":BurstUUID": "x"} for p in paths})
+    d.run()
+    assert immich.tag_members["Media/Bursts"] == {"late"}

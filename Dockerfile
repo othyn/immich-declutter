@@ -10,6 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# exiftool reads the iOS capture markers (portrait, spatial, ...) from the original files
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libimage-exiftool-perl \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home app \
     && mkdir /data && chown app:app /data

@@ -7,10 +7,9 @@ A headless companion container for [Immich](https://immich.app). Every night it 
 | Tag | What ends up there |
 |---|---|
 | Utilities/Memes & Web Images | memes, cartoons, quote images, pictures saved from the web (including stills with a TikTok watermark) |
-| Utilities/TikTok & Reels | videos only, with a TikTok/Reels/CapCut watermark |
 | Utilities/Screenshots | screenshots of apps, chats, maps and websites; native PNG screenshots by size |
 | Utilities/Receipts & Barcodes | till receipts, invoices, barcodes, QR codes, shipping labels, tickets |
-| Utilities/YouTube | screenshots of YouTube and other video players |
+| Utilities/Social Media | screenshots of YouTube and other video players, and videos with a TikTok/Reels/CapCut watermark |
 | Utilities/Photos of Screens | camera photos of monitors, laptops, TVs and phones |
 | Utilities/Documents | camera photos of letters, forms, pages and whiteboards |
 | Utilities/Blurry | camera photos CLIP calls blurry *and* with low Laplacian variance on the thumbnail |
@@ -23,6 +22,19 @@ Each asset gets at most one tag. Archived assets are included; Immich's tag view
 
 - **Delete** what can go, with Immich's normal delete and trash.
 - **Keep** a photo by removing its tag. immich-declutter remembers that and never proposes it again, not even during a full scan.
+
+It also tags iOS capture formats under `Media`, read from the original file with exiftool. These are facts about the file, so they are tagged regardless of the clutter tags and never reconciled:
+
+| Tag | Marker in the original |
+|---|---|
+| Media/Portrait | depth or disparity auxiliary image (and not a spatial photo) |
+| Media/Spatial | HEIF stereo pair (`ster`) or the `SpatialFormat` video key |
+| Media/Cinematic | `Cinematic-video` key |
+| Media/Slo-mo | frame rate of 100 or more; clips iOS stores at 30 fps are missed |
+| Media/Bursts | `BurstUUID` in the Apple maker note |
+| Media/RAW | ProRAW capture type, or a camera RAW extension |
+
+The container needs Immich's upload folder mounted read-only at the same path Immich uses (`/usr/src/app/upload`), because it reads `originalPath` directly. The first run reads every Apple original, after that only new uploads.
 
 Upgrading from upstream: on the first run, everything still in the upstream review albums is tagged, so earlier keep decisions survive. Delete the emptied albums yourself afterwards. The migration needs the old `album.read` permission once.
 
@@ -101,6 +113,9 @@ All settings are environment variables; see [`.env.example`](.env.example).
 | `RUN_AT` | `03:30` | daily run time (HH:MM) |
 | `RUN_ON_START` | `false` | also run immediately when the container starts |
 | `CATEGORIES` | all | comma-separated: `memes,tiktok,screenshots,receipts,youtube,screens,documents,blurry,lowquality,messaging` |
+| `MEDIA` | all | comma-separated: `portrait,spatial,cinematic,slomo,bursts,raw`, or `none` |
+| `MEDIA_TAG_PARENT` | `Media` | parent tag for the media types; `MEDIA_TAG_<TYPE>` renames a child |
+| `MEDIA_THREADS` | `4` | parallel exiftool processes, 100 files each |
 | `FULL_SCAN` | `false` | evaluate the whole library instead of only new assets |
 | `MIN_AGE_HOURS` | `3` | only evaluate assets at least this old |
 | `TAG_PARENT` | `Utilities` | parent tag; each category is a child tag under it |
