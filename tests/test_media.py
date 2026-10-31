@@ -27,6 +27,14 @@ def test_burst_and_raw():
     assert media.from_name({"originalFileName": "IMG_1.HEIC"}) == set()
 
 
+def test_unifi_exports_by_name():
+    vid = {"type": "VIDEO", "exifInfo": {"make": None}}
+    assert media.from_name(vid | {"originalFileName": "unifi_180524_2014_84.0s.mp4"}) == {media.UNIFI}
+    assert media.from_name(vid | {"originalFileName": "Front Door 11-22-2025, 14.55.00 GMT - 11-22-2025, 15.55.00 GMT.mp4"}) == {media.UNIFI}
+    assert media.from_name(vid | {"originalFileName": "IMG_1234.MOV"}) == set()
+    assert media.from_name({"type": "VIDEO", "exifInfo": {"make": "Apple"}, "originalFileName": "unifi_180524_2014_84.0s.mp4"}) == set()
+
+
 def test_only_apple_needs_exiftool():
     assert media.needs_exiftool({"exifInfo": {"make": "Apple"}})
     assert not media.needs_exiftool({"exifInfo": {"make": "FUJIFILM"}})

@@ -33,6 +33,7 @@ It also tags iOS capture formats under `Media`, read from the original file with
 | Media/Slo-mo | frame rate of 100 or more; clips iOS stores at 30 fps are missed |
 | Media/Bursts | `BurstUUID` in the Apple maker note |
 | Media/RAW | ProRAW capture type, or a camera RAW extension |
+| Cameras/UniFi | UniFi Protect export file name on a video with no camera make (full path, set with `MEDIA_TAG_UNIFI`) |
 
 The container needs Immich's upload folder mounted read-only at the same path Immich uses (`/usr/src/app/upload`), because it reads `originalPath` directly. The first run reads every Apple original, after that only new uploads.
 
@@ -113,7 +114,7 @@ All settings are environment variables; see [`.env.example`](.env.example).
 | `RUN_AT` | `03:30` | daily run time (HH:MM) |
 | `RUN_ON_START` | `false` | also run immediately when the container starts |
 | `CATEGORIES` | all | comma-separated: `memes,tiktok,screenshots,receipts,youtube,screens,documents,blurry,lowquality,messaging` |
-| `MEDIA` | all | comma-separated: `portrait,spatial,cinematic,slomo,bursts,raw`, or `none` |
+| `MEDIA` | all | comma-separated: `portrait,spatial,cinematic,slomo,bursts,raw,unifi`, or `none` |
 | `MEDIA_TAG_PARENT` | `Media` | parent tag for the media types; `MEDIA_TAG_<TYPE>` renames a child |
 | `MEDIA_THREADS` | `4` | parallel exiftool processes, 100 files each |
 | `FULL_SCAN` | `false` | evaluate the whole library instead of only new assets |

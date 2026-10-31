@@ -144,7 +144,8 @@ class Config:
             thresholds=thresholds,
             media_types=media_types,
             media_tags={
-                t: f"{os.getenv('MEDIA_TAG_PARENT', 'Media').strip()}/{os.getenv(f'MEDIA_TAG_{t.upper()}', media.DEFAULT_TAGS[t]).strip()}"
+                t: os.getenv(f"MEDIA_TAG_{t.upper()}", media.FULL_PATHS[t]).strip() if t in media.FULL_PATHS
+                else f"{os.getenv('MEDIA_TAG_PARENT', 'Media').strip()}/{os.getenv(f'MEDIA_TAG_{t.upper()}', media.DEFAULT_TAGS[t]).strip()}"
                 for t in media.TYPES
             },
             media_threads=env_int("MEDIA_THREADS", 4, minimum=1),

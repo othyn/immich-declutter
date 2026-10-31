@@ -10,6 +10,10 @@ is read with exiftool. Markers checked against the iOS smart albums on 31/10/202
   Bursts     BurstUUID in the Apple maker note   2/2
   RAW        ProRAW capture type or a camera RAW file type   16/17
   Slo-mo     frame rate of 100 or more   4/44
+  UniFi      UniFi Protect export file name, no camera make   46/46 known exports
+
+ponytail: UniFi matches the export file name only, read the "UniFi" watermark (bottom right) from
+a video frame if renamed exports turn up.
 
 ponytail: Slo-mo misses clips stored at 30 fps with the slow section kept elsewhere, read the
 .AAE edit or the timed-metadata track if those matter.
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 
 LOG = logging.getLogger("immich-declutter")
@@ -29,7 +34,8 @@ CINEMATIC = "cinematic"
 SLOMO = "slomo"
 BURSTS = "bursts"
 RAW = "raw"
-TYPES = (PORTRAIT, SPATIAL, CINEMATIC, SLOMO, BURSTS, RAW)
+UNIFI = "unifi"
+TYPES = (PORTRAIT, SPATIAL, CINEMATIC, SLOMO, BURSTS, RAW, UNIFI)
 DEFAULT_TAGS = {
     PORTRAIT: "Portrait",
     SPATIAL: "Spatial",
@@ -37,8 +43,16 @@ DEFAULT_TAGS = {
     SLOMO: "Slo-mo",
     BURSTS: "Bursts",
     RAW: "RAW",
+    UNIFI: "UniFi",
 }
+# Tags that live outside MEDIA_TAG_PARENT, as a full path
+FULL_PATHS = {UNIFI: "Cameras/UniFi"}
 
+# UniFi Protect exports: "unifi_180524_2014_84.0s.mp4" or
+# "Front Door 11-22-2025, 14.55.00 GMT - 11-22-2025, 15.55.00 GMT.mp4"
+UNIFI_NAME = re.compile(
+    r"^unifi_\d{6}_\d{4}_|\d{1,2}-\d{1,2}-\d{4}, \d{2}\.\d{2}\.\d{2}.* - \d{1,2}-\d{1,2}-\d{4}, \d{2}\.\d{2}\.\d{2}", re.I
+)
 RAW_EXTENSIONS = (".dng", ".raf", ".cr2", ".cr3", ".nef", ".arw", ".orf", ".rw2")
 # -G4 keeps repeated tags apart (Copy1:AuxiliaryImageType, ...); -u exposes the 'ster' box.
 EXIFTOOL = [
@@ -76,7 +90,11 @@ def detect(meta: dict) -> set[str]:
 
 
 def from_name(asset: dict) -> set[str]:
-    return {RAW} if (asset.get("originalFileName") or "").lower().endswith(RAW_EXTENSIONS) else set()
+    name = asset.get("originalFileName") or ""
+    found = {RAW} if name.lower().endswith(RAW_EXTENSIONS) else set()
+    if asset.get("type") == "VIDEO" and not (asset.get("exifInfo") or {}).get("make") and UNIFI_NAME.search(name):
+        found.add(UNIFI)
+    return found
 
 
 def read(paths: list[str], timeout: int = 600) -> dict[str, dict]:
