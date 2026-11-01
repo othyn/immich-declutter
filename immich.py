@@ -91,6 +91,13 @@ class Immich:
         for i in range(0, len(asset_ids), 500):
             self._req("PUT", f"/tags/{tag_id}/assets", json={"ids": asset_ids[i : i + 500]})
 
+    def untag_assets(self, tag_id: str, asset_ids: list[str]) -> None:
+        for i in range(0, len(asset_ids), 500):
+            self._req("DELETE", f"/tags/{tag_id}/assets", json={"ids": asset_ids[i : i + 500]})
+
+    def album_ids(self) -> list[str]:
+        return [a["id"] for a in self._req("GET", "/albums").json()]
+
     def album_asset_ids(self, album_id: str) -> set[str]:
-        """Only used to migrate the upstream review albums to tags (needs album.read)."""
+        """Needs album.read."""
         return {a["id"] for a in self.search(albumIds=[album_id], withExif=False)}

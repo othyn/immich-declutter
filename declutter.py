@@ -27,6 +27,7 @@ import requests
 
 import media
 import rules
+import video
 from immich import Immich, NotFound
 from ml import Clip, image_stats
 from state import State
@@ -97,6 +98,10 @@ class Config:
     media_types: set[str]
     media_tags: dict[str, str]
     media_threads: int
+    video_tags: bool
+    video_tag_parent: str
+    video_keep_tags: list[str]
+    video_back_to_back_minutes: float
     public_url: str
     uptime_kuma_push_url: str
     pushover_token: str
@@ -149,6 +154,10 @@ class Config:
                 for t in media.TYPES
             },
             media_threads=env_int("MEDIA_THREADS", 4, minimum=1),
+            video_tags=env_bool("VIDEO_TAGS", True),
+            video_tag_parent=os.getenv("VIDEO_TAG_PARENT", "Review/Video").strip(),
+            video_keep_tags=[t.strip() for t in os.getenv("VIDEO_KEEP_TAGS", "Media,Cameras/Fujifilm").split(",") if t.strip()],
+            video_back_to_back_minutes=env_float("VIDEO_BACK_TO_BACK_MINUTES", 2),
             public_url=os.getenv("IMMICH_PUBLIC_URL", "").strip().rstrip("/"),
             uptime_kuma_push_url=os.getenv("UPTIME_KUMA_PUSH_URL", "").strip(),
             pushover_token=os.getenv("PUSHOVER_TOKEN", "").strip(),
@@ -189,6 +198,8 @@ class RunResult:
     deleted: int = 0
     failed: int = 0
     media: dict[str, int] = field(default_factory=dict)
+    media_removed: int = 0
+    video: dict[str, int] = field(default_factory=dict)
 
     def summary(self, tags: dict[str, str]) -> str:
         parts = [f"{tags[c]}: {n}" for c, n in self.new.items() if n]
@@ -197,6 +208,8 @@ class RunResult:
             + (f" ({'; '.join(parts)})" if parts else "")
             + f", {self.kept} kept, {self.deleted} deleted since last run, {self.failed} failed"
             + (f", media {', '.join(f'{t} {n}' for t, n in self.media.items() if n)}" if any(self.media.values()) else "")
+            + (f", {self.media_removed} media tags removed" if self.media_removed else "")
+            + (f", video {', '.join(f'{t} {n}' for t, n in self.video.items() if n)}" if any(self.video.values()) else "")
         )
 
 
@@ -325,10 +338,21 @@ class Declutter:
                 assets.append(self.immich.asset(asset_id))
             except NotFound:
                 self.state.set_media(asset_id, set())
-        LOG.info("Media: %d assets to read", len(assets))
         tag_ids = {} if self.cfg.dry_run else {
             t: self.immich.upsert_tag(self.cfg.media_tags[t]) for t in sorted(self.cfg.media_types)
         }
+        # A changed rule: read everything carrying an affected tag again, and untag what no longer matches.
+        recheck: dict[str, set[str]] = {}
+        if int(self.state.get_meta("media_rules") or 1) < media.RULES_VERSION and tag_ids:
+            listed = {a["id"] for a in assets}
+            for t in sorted(media.RECHECK & self.cfg.media_types):
+                for a in self.immich.search(tagIds=[tag_ids[t]]):
+                    recheck.setdefault(a["id"], set()).add(t)
+                    if a["id"] not in listed:
+                        listed.add(a["id"])
+                        assets.append(a)
+            LOG.info("Media: rules changed, re-reading %d assets tagged %s", len(recheck), ", ".join(sorted(media.RECHECK)))
+        LOG.info("Media: %d assets to read", len(assets))
         result.media = {t: 0 for t in sorted(self.cfg.media_types)}
 
         def work(batch: list[dict]) -> list[tuple[dict, set[str] | None]]:
@@ -347,21 +371,59 @@ class Declutter:
         with ThreadPoolExecutor(self.cfg.media_threads) as pool:
             for rows in pool.map(work, batches):
                 to_add: dict[str, list[str]] = {}
+                to_remove: dict[str, list[str]] = {}
                 for asset, found in rows:
                     for t in found or ():
                         to_add.setdefault(t, []).append(asset["id"])
                         result.media[t] += 1
+                    if found is not None:
+                        for t in recheck.get(asset["id"], set()) - found:
+                            to_remove.setdefault(t, []).append(asset["id"])
+                            result.media_removed += 1
                     if not self.cfg.dry_run:
                         self.state.set_media(asset["id"], found)
                 if not self.cfg.dry_run:
                     for t, ids in to_add.items():
                         self.immich.tag_assets(tag_ids[t], ids)
+                    for t, ids in to_remove.items():
+                        self.immich.untag_assets(tag_ids[t], ids)
                 self.state.commit()
                 done += len(rows)
                 if done % 5000 < 100:
                     LOG.info("... media %d/%d read", done, len(assets))
         if not self.cfg.dry_run:
             self.state.set_meta("media_cutoff", iso(until))
+            self.state.set_meta("media_rules", str(media.RULES_VERSION))
+
+    # --- video ---
+
+    def tag_videos(self, result: RunResult) -> None:
+        """Size, length, back-to-back and screen recording tags on every unprotected timeline video."""
+        if not self.cfg.video_tags:
+            return
+        videos = list(self.immich.search(type="VIDEO", visibility="timeline", withPeople=True))
+        in_albums = set().union(*(self.immich.album_asset_ids(a) for a in self.immich.album_ids()))
+        if self.cfg.dry_run:
+            kept: set[str] = set()
+            LOG.info("DRY_RUN: KEEP_TAGS not read, it would create missing tags")
+        else:
+            kept = set().union(*(self.immich.tag_asset_ids(self.immich.upsert_tag(t)) for t in self.cfg.video_keep_tags))
+        want = video.desired(videos, in_albums, kept, self.cfg.video_back_to_back_minutes)
+        LOG.info("Video: %d timeline videos, %d protected", len(videos),
+                 sum(video.protected(a, in_albums, kept) for a in videos))
+        result.video = {t: len(ids) for t, ids in want.items()}
+        if self.cfg.dry_run:
+            return
+        added = removed = 0
+        for t, ids in want.items():
+            tag_id = self.immich.upsert_tag(f"{self.cfg.video_tag_parent}/{t}")
+            have = self.immich.tag_asset_ids(tag_id)
+            if ids - have:
+                self.immich.tag_assets(tag_id, sorted(ids - have))
+            if have - ids:
+                self.immich.untag_assets(tag_id, sorted(have - ids))
+            added, removed = added + len(ids - have), removed + len(have - ids)
+        LOG.info("Video: %d tags added, %d removed", added, removed)
 
     # --- run ---
 
@@ -432,6 +494,7 @@ class Declutter:
 
         flush()
         self.tag_media(until, result)
+        self.tag_videos(result)
         if not self.cfg.dry_run:
             self.state.set_meta("categories", ",".join(sorted(self.cfg.categories | self.seen_categories)))
             self.state.set_meta("cutoff", iso(until))

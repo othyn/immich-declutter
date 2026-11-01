@@ -6,9 +6,12 @@ def test_spatial_photo_is_not_portrait():
     assert media.detect(meta) == {media.SPATIAL}
 
 
-def test_portrait_from_depth():
+def test_portrait_needs_the_portrait_flag():
+    # IMG_4972 (Portrait mode) and IMG_4971 (Photo mode, depth saved automatically), 01/11/2026
     meta = {":AuxiliaryImageType": "urn:mpeg:hevc:2015:auxid:2", "Copy1:AuxiliaryImageType": "depth"}
-    assert media.detect(meta) == {media.PORTRAIT}
+    assert media.detect(meta | {":ImageProcessingFlags": 2105448}) == {media.PORTRAIT}
+    assert media.detect(meta | {":ImageProcessingFlags": 18882592}) == set()
+    assert media.detect(meta) == set()
 
 
 def test_plain_photo_has_no_type():
@@ -18,6 +21,8 @@ def test_plain_photo_has_no_type():
 def test_videos():
     assert media.detect({":SpatialFormat-version": "1.0", ":VideoFrameRate": 29.997}) == {media.SPATIAL}
     assert media.detect({":Cinematic-video": "(Binary data)", ":VideoFrameRate": 23.997}) == {media.CINEMATIC}
+    assert media.detect({":Cinematic-video": "(Binary data)", ":Cinematic-video-intent": 1}) == {media.CINEMATIC}
+    assert media.detect({":Cinematic-video": "(Binary data)", ":Cinematic-video-intent": 0}) == set()
     assert media.detect({":VideoFrameRate": 120.014}) == {media.SLOMO}
 
 

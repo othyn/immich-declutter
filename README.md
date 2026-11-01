@@ -23,19 +23,31 @@ Each asset gets at most one tag. Archived assets are included; Immich's tag view
 - **Delete** what can go, with Immich's normal delete and trash.
 - **Keep** a photo by removing its tag. immich-declutter remembers that and never proposes it again, not even during a full scan.
 
-It also tags iOS capture formats under `Media`, read from the original file with exiftool. These are facts about the file, so they are tagged regardless of the clutter tags and never reconciled:
+It also tags iOS capture formats under `Media`, read from the original file with exiftool. These are facts about the file, so they are tagged regardless of the clutter tags and never reconciled. A changed detection rule is the exception: everything carrying the affected tag is read again once, and untagged if it no longer matches.
 
 | Tag | Marker in the original |
 |---|---|
-| Media/Portrait | depth or disparity auxiliary image (and not a spatial photo) |
+| Media/Portrait | depth or disparity auxiliary image with bit `0x40` of the Apple `ImageProcessingFlags` (and not a spatial photo). Since the iPhone 15, depth alone is saved on any photo with a person or pet in it |
 | Media/Spatial | HEIF stereo pair (`ster`) or the `SpatialFormat` video key |
-| Media/Cinematic | `Cinematic-video` key |
+| Media/Cinematic | `Cinematic-video` key with a `Cinematic-video-intent` other than 0. The iPhone 18 Pro Max writes the key with intent 0 on every video |
 | Media/Slo-mo | frame rate of 100 or more; clips iOS stores at 30 fps are missed |
 | Media/Bursts | `BurstUUID` in the Apple maker note |
 | Media/RAW | ProRAW capture type, or a camera RAW extension |
 | Cameras/UniFi | UniFi Protect export file name on a video with no camera make (full path, set with `MEDIA_TAG_UNIFI`) |
 
 The container needs Immich's upload folder mounted read-only at the same path Immich uses (`/usr/src/app/upload`), because it reads `originalPath` directly. The first run reads every Apple original, after that only new uploads.
+
+It also tags every timeline video under `Review/Video` to make pruning by hand easier, recomputed and reconciled each run:
+
+| Tag | Rule |
+|---|---|
+| Size/1 Under 20 MB ... Size/8 Over 2 GB | file size, eight bands |
+| Accidental | shorter than 3 seconds |
+| Length/1 3-10 s ... Length/7 Over 15 min | duration, seven bands |
+| Back to back | shot within `VIDEO_BACK_TO_BACK_MINUTES` of another video |
+| Screen recordings | file name starts with `RPReplay` or `ScreenRecording` |
+
+Protected videos carry none of them: favourites, anything in an album, anything with a named person, and anything under a `VIDEO_KEEP_TAGS` tag. To take a video out of review, favourite it or add it to an album. Removing a tag by hand does not stick. Live Photo motion clips are hidden assets and are never tagged. Needs `album.read`.
 
 Upgrading from upstream: on the first run, everything still in the upstream review albums is tagged, so earlier keep decisions survive. Delete the emptied albums yourself afterwards. The migration needs the old `album.read` permission once.
 
@@ -62,7 +74,7 @@ Your library will differ, so the thresholds can be tuned with `THRESHOLD_*` (see
 
 - Immich with **Smart Search (CLIP)** and **OCR** enabled. Tested with Immich 3.2.
 - Network access to the Immich server **and** to the `immich-machine-learning` container (port 3003). Immich's default compose file doesn't publish that port, so the easiest way is to join Immich's Docker network (see `compose.yaml`).
-- An Immich API key with these permissions: `asset.read`, `asset.view`, `tag.create`, `tag.asset` (plus `album.read` once, when migrating from upstream albums). The container checks them at the start of every run.
+- An Immich API key with these permissions: `asset.read`, `asset.view`, `tag.create`, `tag.asset` plus `album.read` for the video tags (and once, when migrating from upstream albums). The container checks them at the start of every run.
 
 ## Setup
 
@@ -117,6 +129,10 @@ All settings are environment variables; see [`.env.example`](.env.example).
 | `MEDIA` | all | comma-separated: `portrait,spatial,cinematic,slomo,bursts,raw,unifi`, or `none` |
 | `MEDIA_TAG_PARENT` | `Media` | parent tag for the media types; `MEDIA_TAG_<TYPE>` renames a child |
 | `MEDIA_THREADS` | `4` | parallel exiftool processes, 100 files each |
+| `VIDEO_TAGS` | `true` | size, length, back-to-back and screen recording tags on videos |
+| `VIDEO_TAG_PARENT` | `Review/Video` | parent tag for the video tags |
+| `VIDEO_KEEP_TAGS` | `Media,Cameras/Fujifilm` | comma-separated tags (with their children) whose videos are never tagged |
+| `VIDEO_BACK_TO_BACK_MINUTES` | `2` | gap between two videos that counts as back to back |
 | `FULL_SCAN` | `false` | evaluate the whole library instead of only new assets |
 | `MIN_AGE_HOURS` | `3` | only evaluate assets at least this old |
 | `TAG_PARENT` | `Utilities` | parent tag; each category is a child tag under it |

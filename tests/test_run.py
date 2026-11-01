@@ -29,11 +29,22 @@ class FakeImmich:
     def tag_assets(self, tag_id, ids):
         self.tag_members[tag_id] |= set(ids)
 
+    def untag_assets(self, tag_id, ids):
+        self.tag_members[tag_id] -= set(ids)
+
+    def album_ids(self):
+        return list(self.album_members)
+
     def album_asset_ids(self, album_id):
         return set(self.album_members[album_id])
 
     def search(self, **filters):
-        return list(self.assets.values())
+        out = list(self.assets.values())
+        if "tagIds" in filters:
+            out = [a for a in out if a["id"] in self.tag_members[filters["tagIds"][0]]]
+        if "type" in filters:
+            out = [a for a in out if a.get("type") == filters["type"]]
+        return out
 
     def asset(self, asset_id):
         if asset_id not in self.assets:
@@ -177,3 +188,41 @@ def test_media_retry_survives_cutoff(tmp_path, monkeypatch):
     monkeypatch.setattr(declutter.media, "read", lambda paths: {p: {":BurstUUID": "x"} for p in paths})
     d.run()
     assert immich.tag_members["Media/Bursts"] == {"late"}
+
+
+def test_media_rule_change_untags_old_matches(tmp_path, monkeypatch):
+    d, immich, cfg = make(tmp_path, monkeypatch, [asset("auto"), asset("real")])
+    portrait = cfg.media_tags["portrait"]
+    immich.tag_members[portrait] = {"auto", "real"}
+    for a in ("auto", "real"):
+        d.state.set_media(a, {"portrait"})
+    d.state.set_meta("media_cutoff", "2026-01-01T00:00:00Z")
+    monkeypatch.setattr(declutter.media, "read", lambda paths: {p: {} for p in paths})
+    monkeypatch.setattr(declutter.media, "needs_exiftool", lambda a: True)
+    monkeypatch.setattr(declutter.media, "detect", lambda m: set())
+    monkeypatch.setattr(declutter.media, "from_name", lambda a: {"portrait"} if a["id"] == "real" else set())
+    d.run()
+    assert immich.tag_members[portrait] == {"real"}
+    assert d.state.get_meta("media_rules") == str(declutter.media.RULES_VERSION)
+
+
+def test_video_tags_reconcile(tmp_path, monkeypatch):
+    def vid(id_, mb, s, at, **kw):
+        return {"id": id_, "type": "VIDEO", "visibility": "timeline", "duration": s * 1000,
+                "fileCreatedAt": f"2026-10-01T12:{at:02d}:00Z", "originalFileName": f"{id_}.MOV",
+                "exifInfo": {"make": None, "fileSizeInByte": mb * 1e6}, "originalPath": f"/x/{id_}.mov", **kw}
+
+    vids = [vid("pocket", 1, 1, 0), vid("burst", 30, 20, 1), vid("fav", 600, 400, 30, isFavorite=True),
+            vid("bob", 30, 20, 40, people=[{"name": "Bob"}]), vid("alone", 2500, 1000, 50)]
+    d, immich, cfg = make(tmp_path, monkeypatch, vids)
+    p = cfg.video_tag_parent
+    d.run()
+    members = {t.removeprefix(p + "/"): ids for t, ids in immich.tag_members.items() if t.startswith(p)}
+    assert members["Accidental"] == {"pocket"}
+    assert members["Back to back"] == {"pocket", "burst"}
+    assert members["Size/2 20-50 MB"] == {"burst"}
+    assert members["Size/8 Over 2 GB"] == members["Length/7 Over 15 min"] == {"alone"}
+    assert not any("fav" in ids or "bob" in ids for ids in members.values())
+    immich.assets["alone"]["isFavorite"] = True
+    d.run()
+    assert not immich.tag_members[f"{p}/Size/8 Over 2 GB"]
