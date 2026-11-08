@@ -8,14 +8,16 @@ is read with exiftool. Markers checked against the iOS smart albums on 31/10/202
   Spatial    HEIF 'ster' stereo group (photo), SpatialFormat key (video)   80/80
   Cinematic  Cinematic-video key, intent not 0   2/2, and 1/1 test clip
   Bursts     BurstUUID in the Apple maker note   2/2
-  RAW        ProRAW capture type or a camera RAW file type   16/17
+  RAW        a RAW file extension; ProRAW is saved as DNG   16/17
   Slo-mo     frame rate of 100 or more   4/44
   UniFi      UniFi Protect export file name, no camera make   46/46 known exports
 
 Since the iPhone 15 the camera saves depth data whenever a person or pet is in frame, and the
 iPhone 18 Pro Max writes a Cinematic-video key with intent 0 on every video. Checked 01/11/2026
 against a Photo-mode and a Portrait-mode shot of one subject: only Portrait sets bit 0x40 of the
-Apple ImageProcessingFlags (12,645 depth photos, 74 with the bit).
+Apple ImageProcessingFlags (12,645 depth photos, 74 with the bit). The maker note's
+ImageCaptureType 1, which exiftool names ProRAW, is also set on ordinary JPG and HEIC photos from
+phones that cannot shoot ProRAW (iPhone XS, 7 Plus), so RAW comes from the file name alone.
 
 ponytail: UniFi matches the export file name only, read the "UniFi" watermark (bottom right) from
 a video frame if renamed exports turn up.
@@ -42,8 +44,8 @@ RAW = "raw"
 UNIFI = "unifi"
 TYPES = (PORTRAIT, SPATIAL, CINEMATIC, SLOMO, BURSTS, RAW, UNIFI)
 # Bump when a detection rule changes; assets tagged with RECHECK types are read again once.
-RULES_VERSION = 2
-RECHECK = {PORTRAIT, CINEMATIC}
+RULES_VERSION = 3
+RECHECK = {PORTRAIT, CINEMATIC, RAW}
 PORTRAIT_FLAG = 0x40
 DEFAULT_TAGS = {
     PORTRAIT: "Portrait",
@@ -67,7 +69,7 @@ RAW_EXTENSIONS = (".dng", ".raf", ".cr2", ".cr3", ".nef", ".arw", ".orf", ".rw2"
 EXIFTOOL = [
     "exiftool", "-j", "-n", "-a", "-u", "-G4", "-fast",
     "-AuxiliaryImageType", "-Unknown_ster", "-SpatialFormat-version", "-Cinematic-video",
-    "-Cinematic-video-intent", "-ImageProcessingFlags", "-VideoFrameRate", "-BurstUUID", "-ImageCaptureType", "-FileType",
+    "-Cinematic-video-intent", "-ImageProcessingFlags", "-VideoFrameRate", "-BurstUUID", "-FileType",
 ]
 
 
@@ -96,8 +98,6 @@ def detect(meta: dict) -> set[str]:
         found.add(SLOMO)
     if any(values.get("BurstUUID", [])):
         found.add(BURSTS)
-    if 1 in values.get("ImageCaptureType", []):  # ProRAW
-        found.add(RAW)
     return found
 
 

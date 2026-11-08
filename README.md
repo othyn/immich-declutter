@@ -32,7 +32,7 @@ It also tags iOS capture formats under `Media`, read from the original file with
 | Media/Cinematic | `Cinematic-video` key with a `Cinematic-video-intent` other than 0. The iPhone 18 Pro Max writes the key with intent 0 on every video |
 | Media/Slo-mo | frame rate of 100 or more; clips iOS stores at 30 fps are missed |
 | Media/Bursts | `BurstUUID` in the Apple maker note |
-| Media/RAW | ProRAW capture type, or a camera RAW extension |
+| Media/RAW | a RAW file extension (`.dng` covers ProRAW) |
 | Cameras/UniFi | UniFi Protect export file name on a video with no camera make (full path, set with `MEDIA_TAG_UNIFI`) |
 
 The container needs Immich's upload folder mounted read-only at the same path Immich uses (`/usr/src/app/upload`), because it reads `originalPath` directly. The first run reads every Apple original, after that only new uploads.

@@ -27,7 +27,7 @@ def test_videos():
 
 
 def test_burst_and_raw():
-    assert media.detect({":BurstUUID": "22183F0D", ":ImageCaptureType": 1}) == {media.BURSTS, media.RAW}
+    assert media.detect({":BurstUUID": "22183F0D", ":ImageCaptureType": 1}) == {media.BURSTS}  # 1 is not ProRAW
     assert media.from_name({"originalFileName": "DSCF0001.RAF"}) == {media.RAW}
     assert media.from_name({"originalFileName": "IMG_1.HEIC"}) == set()
 
